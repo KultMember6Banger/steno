@@ -7,6 +7,7 @@ ChromaDB persists to disk. File mtimes tracked for incremental updates.
 
 import json
 import os
+import sys
 import time
 from pathlib import Path
 
@@ -65,6 +66,8 @@ def _sanitize_metadata(record: Record) -> dict:
         'record_type': record.record_type,
         'memory_type': record.metadata.get('memory_type', 'unknown'),
         'format': record.metadata.get('format', 'prose'),
+        'access_count': 0,
+        'last_accessed': '',
     }
     if record.metadata.get('scope'):
         m['scope'] = str(record.metadata['scope'])
@@ -191,3 +194,23 @@ def build_index(
         'total_files': len(new_mtimes),
         'time_sec': round(time.time() - t0, 2),
     }
+
+
+if __name__ == '__main__':
+    args = [a for a in sys.argv[1:] if not a.startswith('--')]
+    flags = [a for a in sys.argv[1:] if a.startswith('--')]
+
+    memory_dir = Path(args[0]) if args else Path('.')
+    rebuild = '--rebuild' in flags
+
+    print(f'Indexing {memory_dir}...')
+    if rebuild:
+        print('(rebuilding from scratch)')
+
+    stats = build_index(memory_dir, rebuild=rebuild)
+    print(f'Done in {stats["time_sec"]}s')
+    print(f'  Indexed:   {stats["records_indexed"]} records')
+    print(f'  Updated:   {stats["records_updated"]} files re-indexed')
+    print(f'  Unchanged: {stats["records_unchanged"]} files skipped')
+    print(f'  Deleted:   {stats["files_deleted"]} files cleaned up')
+    print(f'  Total:     {stats["total_files"]} files tracked')

@@ -261,3 +261,17 @@ def parse_directory(dir_path: Path, pattern: str = '*.md') -> list[Record]:
         except Exception as e:
             print(f'WARN: failed to parse {f.name}: {e}')
     return records
+
+
+if __name__ == '__main__':
+    import sys
+
+    target = Path(sys.argv[1]) if len(sys.argv) > 1 else Path('.')
+    if target.is_file():
+        recs = parse_file(target)
+    else:
+        recs = parse_directory(target)
+
+    print(f'Parsed {len(recs)} records')
+    for r in recs[:5]:
+        print(f'  {r.id} [{r.record_type}] {r.text[:80]}...')

@@ -3,10 +3,15 @@ Memory Retrieval — query the Steno memory index via semantic search.
 
 Returns top-K relevant records from ChromaDB, ranked by cosine similarity.
 Supports filtering by record type, memory type, and source file.
+
+Access tracking: each retrieval updates access_count and last_accessed
+in ChromaDB metadata, enabling Vigil's access-frequency decay scoring.
 """
 
+import sys
 from pathlib import Path
 from dataclasses import dataclass
+from datetime import datetime, timezone
 
 import chromadb
 from sentence_transformers import SentenceTransformer
@@ -86,12 +91,15 @@ def query(
     output = []
     for i in range(len(results['ids'][0])):
         distance = results['distances'][0][i]
-        score = 1 - (distance / 2)
+        raw_score = 1 - (distance / 2)
 
-        if score < min_score:
+        if raw_score < min_score:
             continue
 
         meta = results['metadatas'][0][i]
+        health = float(meta.get('health_score', 1.0))
+        score = raw_score * health
+
         output.append(Result(
             id=results['ids'][0][i],
             text=results['documents'][0][i],
@@ -101,7 +109,31 @@ def query(
             memory_type=meta.get('memory_type', ''),
         ))
 
+    # Update access tracking for returned records
+    if output:
+        _update_access_counts(collection, results, len(output))
+
     return output
+
+
+def _update_access_counts(collection, results, n_returned: int):
+    """Bump access_count and last_accessed for retrieved records."""
+    now_iso = datetime.now(timezone.utc).isoformat()
+    batch_ids = []
+    batch_metas = []
+
+    for i in range(n_returned):
+        rec_id = results['ids'][0][i]
+        meta = dict(results['metadatas'][0][i])
+        meta['access_count'] = int(meta.get('access_count', 0)) + 1
+        meta['last_accessed'] = now_iso
+        batch_ids.append(rec_id)
+        batch_metas.append(meta)
+
+    try:
+        collection.update(ids=batch_ids, metadatas=batch_metas)
+    except Exception:
+        pass  # access tracking is best-effort, never block retrieval
 
 
 def query_formatted(query_text: str, top_k: int = 10, **kwargs) -> str:
@@ -118,3 +150,34 @@ def query_formatted(query_text: str, top_k: int = 10, **kwargs) -> str:
         lines.append('')
 
     return '\n'.join(lines)
+
+
+if __name__ == '__main__':
+    if len(sys.argv) < 2:
+        print('Usage: memory_retrieval.py "query text" [top_k] [--type=@V] [--memory=feedback]')
+        sys.exit(1)
+
+    query_text = sys.argv[1]
+    top_k = 10
+    record_type = None
+    memory_type = None
+
+    for arg in sys.argv[2:]:
+        if arg.startswith('--type='):
+            record_type = arg[7:]
+        elif arg.startswith('--memory='):
+            memory_type = arg[9:]
+        elif arg.isdigit():
+            top_k = int(arg)
+
+    results = query(query_text, top_k=top_k, record_type=record_type, memory_type=memory_type)
+
+    print(f'\nQuery: "{query_text}"')
+    print(f'Results: {len(results)}\n')
+
+    for r in results:
+        print(f'[{r.score:.4f}] {r.id}')
+        print(f'  source: {r.source_file} | type: {r.record_type} | memory: {r.memory_type}')
+        preview = r.text[:120].replace('\n', ' ')
+        print(f'  {preview}...')
+        print()
