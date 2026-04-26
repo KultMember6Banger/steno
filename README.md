@@ -24,7 +24,7 @@ AI coding agents (Claude Code, Cursor, Copilot) build up memory files over time 
 
 ```bash
 # Clone
-git clone https://github.com/YOUR_USERNAME/steno.git
+git clone https://github.com/KultMember6Banger/steno.git
 cd steno
 
 # Install
@@ -138,6 +138,10 @@ Top-K relevant records
     ↓ inject
 AI agent context window
 ```
+
+**Health-weighted scoring:** When used with [Vigil](https://github.com/KultMember6Banger/vigil), retrieval scores are multiplied by each memory's health score. Stale, contradicted, or orphaned memories are automatically deprioritized without manual curation.
+
+**Access tracking:** Every retrieval updates `access_count` and `last_accessed` in ChromaDB metadata. Vigil uses this to apply Ebbinghaus retention curves — frequently accessed memories resist staleness decay.
 
 **Incremental indexing:** Steno tracks file modification times. Only changed files are re-embedded on re-index. Unchanged files are skipped in ~0.1s.
 

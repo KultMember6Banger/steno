@@ -36,7 +36,7 @@ def query(
     record_type: str | None = None,
     memory_type: str | None = None,
     source_file: str | None = None,
-    min_score: float = 0.55,
+    min_score: float = 0.30,
     store_dir: Path = DEFAULT_STORE_DIR,
     model_name: str = EMBED_MODEL,
 ) -> list[Result]:
@@ -88,17 +88,19 @@ def query(
 
     results = collection.query(**kwargs)
 
+    # ChromaDB cosine distance = 1 - cosine_similarity, range [0, 2]
+    # Convert back: similarity = 1 - distance
     output = []
     for i in range(len(results['ids'][0])):
         distance = results['distances'][0][i]
-        raw_score = 1 - (distance / 2)
-
-        if raw_score < min_score:
-            continue
+        raw_score = 1 - distance
 
         meta = results['metadatas'][0][i]
         health = float(meta.get('health_score', 1.0))
         score = raw_score * health
+
+        if score < min_score:
+            continue
 
         output.append(Result(
             id=results['ids'][0][i],
