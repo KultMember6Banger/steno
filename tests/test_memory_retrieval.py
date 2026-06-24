@@ -69,8 +69,12 @@ def _make_raw_results(items):
     }
 
 
-def _patch_query(monkeypatch, raw_results):
-    """Patch chromadb client/collection + model so query() runs against fixtures."""
+def _patch_query(monkeypatch, raw_results, query_vec=None):
+    """Patch chromadb client/collection + model so query() runs against fixtures.
+
+    query_vec: optional explicit query embedding (list[float]); when given, the
+    model's encode() returns it so MMR relevance is deterministic.
+    """
     fake_collection = mock.MagicMock()
     fake_collection.query.return_value = raw_results
 
@@ -78,7 +82,22 @@ def _patch_query(monkeypatch, raw_results):
     fake_client.get_collection.return_value = fake_collection
 
     monkeypatch.setattr(mr.chromadb, 'PersistentClient', lambda path: fake_client)
-    # SentenceTransformer already faked at module level.
+
+    if query_vec is not None:
+        class _ST:
+            def __init__(self, *a, **k):
+                pass
+
+            def encode(self, texts, show_progress_bar=False):
+                vec = query_vec
+
+                class _Vecs:
+                    def tolist(self_inner):
+                        return [list(vec) for _ in texts]
+                return _Vecs()
+
+        monkeypatch.setattr(mr, 'SentenceTransformer', _ST)
+    # else: SentenceTransformer already faked at module level.
     return fake_collection
 
 
@@ -161,3 +180,100 @@ def test_default_min_score_is_030():
     import inspect
     sig = inspect.signature(mr.query)
     assert sig.parameters['min_score'].default == 0.30
+
+
+# --- token budgeting (pure helpers) --------------------------------------
+def test_estimate_tokens_heuristic():
+    assert mr._estimate_tokens('') == 0
+    assert mr._estimate_tokens('a') == 1          # ceil(1/4)
+    assert mr._estimate_tokens('x' * 8) == 2      # ceil(8/4)
+    assert mr._estimate_tokens('x' * 9) == 3      # ceil(9/4)
+
+
+def test_knapsack_picks_high_density_within_budget():
+    from memory_retrieval import Result
+    # short+high-score should be preferred over long+low-score within budget.
+    short_hi = Result('a', 'x' * 8, 0.9, 'f', 'c', 'm')   # 2 tokens
+    long_lo = Result('b', 'x' * 40, 0.4, 'f', 'c', 'm')   # 10 tokens
+    long_hi = Result('c', 'x' * 40, 0.8, 'f', 'c', 'm')   # 10 tokens
+    chosen = mr._knapsack_by_budget([long_lo, short_hi, long_hi], token_budget=12)
+    ids = {r.id for r in chosen}
+    assert 'a' in ids          # cheap + high score always fits
+    assert 'c' in ids          # 2 + 10 = 12 fits
+    assert 'b' not in ids      # would overflow / lower density
+    # returned in score-descending order (a=0.9 > c=0.8)
+    assert [r.id for r in chosen] == ['a', 'c']
+
+
+def test_knapsack_zero_budget_returns_all():
+    from memory_retrieval import Result
+    rs = [Result('a', 'hi', 0.9, 'f', 'c', 'm')]
+    assert mr._knapsack_by_budget(rs, 0) == rs
+
+
+# --- budget end-to-end through query() (mocked store) --------------------
+def test_query_token_budget_limits_set(monkeypatch):
+    raw = _make_raw_results([
+        ('a', 0.1, {'health_score': 1.0, 'source_file': 'f'}),  # sim 0.9
+        ('b', 0.15, {'health_score': 1.0, 'source_file': 'g'}), # sim 0.85
+        ('c', 0.2, {'health_score': 1.0, 'source_file': 'h'}),  # sim 0.8
+    ])
+    # documents are 'doc for X' (9 chars -> 3 tokens each). Budget for ~1 item.
+    _patch_query(monkeypatch, raw)
+    results = mr.query("q", min_score=0.0, token_budget=3)
+    assert len(results) == 1
+
+
+# --- hybrid (RRF fuses BM25 + semantic) ----------------------------------
+def test_query_hybrid_surfaces_exact_token_doc(monkeypatch):
+    # Semantic order ranks 'a' first, but only doc 'c' literally contains the
+    # query token; hybrid RRF should pull 'c' up into the results.
+    raw = {
+        'ids': [['a', 'b', 'c']],
+        'distances': [[0.1, 0.2, 0.5]],  # semantic: a > b > c
+        'documents': [[
+            'general prose about deployment',
+            'notes on the billing pipeline',
+            'service listens on port 50052 exactly',
+        ]],
+        'metadatas': [[
+            {'health_score': 1.0, 'source_file': 'a'},
+            {'health_score': 1.0, 'source_file': 'b'},
+            {'health_score': 1.0, 'source_file': 'c'},
+        ]],
+    }
+    _patch_query(monkeypatch, raw)
+    results = mr.query("port 50052", min_score=0.0, hybrid=True, top_k=3)
+    ids = [r.id for r in results]
+    assert 'c' in ids
+    # c (exact match) should out-rank b which has neither semantic nor keyword edge
+    assert ids.index('c') < ids.index('b')
+
+
+# --- mmr (diversification over embeddings) -------------------------------
+def test_query_mmr_uses_embeddings(monkeypatch):
+    raw = {
+        'ids': [['a', 'b', 'c']],
+        'distances': [[0.05, 0.06, 0.3]],
+        'documents': [['doc a', 'doc b', 'doc c']],
+        'metadatas': [[
+            {'health_score': 1.0, 'source_file': 'a'},
+            {'health_score': 1.0, 'source_file': 'b'},
+            {'health_score': 1.0, 'source_file': 'c'},
+        ]],
+        'embeddings': [[
+            [1.0, 0.0, 0.0],     # a
+            [0.99, 0.01, 0.0],   # b near-duplicate of a
+            [0.6, 0.0, 0.6],     # c diverse
+        ]],
+    }
+    # Make the query embedding align with doc 'a' so 'a' is the relevance seed.
+    fake_collection = _patch_query(monkeypatch, raw, query_vec=[1.0, 0.0, 0.0])
+    results = mr.query("anything", min_score=0.0, mmr=True, mmr_lambda=0.3, top_k=3)
+    ids = [r.id for r in results]
+    # mmr should place the diverse doc 'c' before the near-duplicate 'b'.
+    assert ids[0] == 'a'
+    assert ids.index('c') < ids.index('b')
+    # query must have requested embeddings.
+    _, kwargs = fake_collection.query.call_args
+    assert 'embeddings' in kwargs['include']

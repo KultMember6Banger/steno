@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "steno"
-version = "0.2.0"
+version = "0.3.0"
 description = "Compressed memory notation with RAG retrieval for AI agents."
 readme = "README.md"
 requires-python = ">=3.9"
@@ -38,6 +38,8 @@ only-include = [
     "steno_compress.py",
     "memory_index.py",
     "memory_retrieval.py",
+    "bm25.py",
+    "mmr.py",
     "mcp_server.py",
 ]
 
@@ -47,6 +49,8 @@ only-include = [
 "steno_compress.py" = "steno_compress.py"
 "memory_index.py" = "memory_index.py"
 "memory_retrieval.py" = "memory_retrieval.py"
+"bm25.py" = "bm25.py"
+"mmr.py" = "mmr.py"
 "mcp_server.py" = "mcp_server.py"
 
 [tool.hatch.build.targets.sdist]
@@ -56,6 +60,8 @@ include = [
     "steno_compress.py",
     "memory_index.py",
     "memory_retrieval.py",
+    "bm25.py",
+    "mmr.py",
     "mcp_server.py",
     "README.md",
     "LICENSE",
