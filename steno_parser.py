@@ -242,7 +242,11 @@ def parse_file(file_path: Path) -> list[Record]:
 
     meta['format'] = fmt
     meta['file_stem'] = file_stem
-    meta['memory_type'] = meta.get('type', 'unknown')
+    # `type` may be top-level or nested under `metadata:` (Claude Code memory format).
+    mtype = meta.get('type')
+    if not mtype and isinstance(meta.get('metadata'), dict):
+        mtype = meta['metadata'].get('type')
+    meta['memory_type'] = mtype or 'unknown'
 
     if fmt == 'steno-m':
         return parse_steno_m(body, file_stem, meta)
