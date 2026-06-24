@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "steno"
-version = "0.3.0"
+version = "0.4.0"
 description = "Compressed memory notation with RAG retrieval for AI agents."
 readme = "README.md"
 requires-python = ">=3.9"
@@ -29,6 +29,7 @@ Repository = "https://github.com/KultMember6Banger/steno"
 
 [project.scripts]
 steno = "steno:main"
+memory-mcp = "memory_mcp:main"
 
 # Flat modules — package the individual .py files (no package directory).
 [tool.hatch.build.targets.wheel]
@@ -36,33 +37,42 @@ only-include = [
     "steno.py",
     "steno_parser.py",
     "steno_compress.py",
+    "steno_curate.py",
+    "memcore.py",
     "memory_index.py",
     "memory_retrieval.py",
     "bm25.py",
     "mmr.py",
     "mcp_server.py",
+    "memory_mcp.py",
 ]
 
 [tool.hatch.build.targets.wheel.force-include]
 "steno.py" = "steno.py"
 "steno_parser.py" = "steno_parser.py"
 "steno_compress.py" = "steno_compress.py"
+"steno_curate.py" = "steno_curate.py"
+"memcore.py" = "memcore.py"
 "memory_index.py" = "memory_index.py"
 "memory_retrieval.py" = "memory_retrieval.py"
 "bm25.py" = "bm25.py"
 "mmr.py" = "mmr.py"
 "mcp_server.py" = "mcp_server.py"
+"memory_mcp.py" = "memory_mcp.py"
 
 [tool.hatch.build.targets.sdist]
 include = [
     "steno.py",
     "steno_parser.py",
     "steno_compress.py",
+    "steno_curate.py",
+    "memcore.py",
     "memory_index.py",
     "memory_retrieval.py",
     "bm25.py",
     "mmr.py",
     "mcp_server.py",
+    "memory_mcp.py",
     "README.md",
     "LICENSE",
     "requirements.txt",

@@ -8,6 +8,7 @@ Usage:
   steno compress FILE [--level steno] [--write]   Compress prose -> steno
   steno expand FILE [--write]            Expand steno -> readable prose (best-effort)
   steno emit JSON_FILE [--scope NAME]    Emit Steno-M from structured JSON records
+  steno curate MEMORY_DIR [--compress] [--gate] [--yes]   Self-curating loop
   steno stats                            Show index statistics
   steno parse [FILE_OR_DIR]              Parse and preview records (no indexing)
 
@@ -453,6 +454,63 @@ def cmd_expand(args: list[str]):
         )
 
 
+def cmd_curate(args: list[str]):
+    """Self-curating loop: compress -> gate (Vigil) -> index -> score (Vigil).
+
+    Usage: steno curate MEMORY_DIR [--compress] [--gate] [--store S]
+           [--collection C] [--yes]
+
+    --compress  compress prose memories in place first (skip steno files)
+    --gate      run Vigil's pre-write contradiction gate; CRITICAL conflicts
+                skip that file from indexing unless --yes
+    --yes       allow flagged files through the gate (index them anyway)
+
+    Vigil steps (gate + health scoring) are soft: they activate only when Vigil
+    is importable (pip-installed, or a sibling ../vigil/src checkout). Without
+    Vigil, curate runs compress + index only.
+    """
+    from steno_curate import curate
+    from memory_index import DEFAULT_STORE_DIR
+
+    positional = [a for a in args if not a.startswith('--')]
+    flags = [a for a in args if a.startswith('--')]
+
+    if not positional:
+        print('Error: memory directory required')
+        print('Usage: steno curate MEMORY_DIR [--compress] [--gate] '
+              '[--store=PATH] [--collection=NAME] [--yes]')
+        sys.exit(1)
+
+    memory_dir = Path(positional[0])
+    if not memory_dir.is_dir():
+        print(f'Error: {memory_dir} is not a directory')
+        sys.exit(1)
+
+    do_compress = '--compress' in flags
+    do_gate = '--gate' in flags
+    yes = '--yes' in flags
+    store_val = _get_flag_value(flags, '--store')
+    store_dir = Path(store_val) if store_val else DEFAULT_STORE_DIR
+    collection_name = _get_flag_value(flags, '--collection')
+
+    print(f'Curating {memory_dir}...')
+    summary = curate(
+        memory_dir,
+        compress=do_compress,
+        gate=do_gate,
+        store_dir=store_dir,
+        collection_name=collection_name,
+        yes=yes,
+    )
+
+    print('\n--- curate summary ---')
+    print(f'  compressed:      {summary["compressed"]}')
+    print(f'  gated:           {summary["gated"]}')
+    print(f'  indexed:         {summary["indexed"]}')
+    print(f'  scored:          {summary["scored"]}')
+    print(f'  vigil_available: {summary["vigil_available"]}')
+
+
 def cmd_emit(args: list[str]):
     """Emit Steno-M text from a JSON file of structured records.
 
@@ -520,6 +578,7 @@ def main():
         'compress': cmd_compress,
         'expand': cmd_expand,
         'emit': cmd_emit,
+        'curate': cmd_curate,
         'stats': cmd_stats,
         'parse': cmd_parse,
     }
