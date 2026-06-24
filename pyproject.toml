@@ -9,7 +9,7 @@ description = "Compressed memory notation with RAG retrieval for AI agents."
 readme = "README.md"
 requires-python = ">=3.9"
 license = { text = "MIT" }
-authors = [{ name = "KultMember6Banger" }]
+authors = [{ name = "Eli", email = "vigil@example.com" }]
 keywords = ["rag", "memory", "ai-agents", "chromadb", "embeddings", "compression"]
 classifiers = [
     "Programming Language :: Python :: 3",
