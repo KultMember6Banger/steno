@@ -1,0 +1,65 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "steno"
+version = "0.2.0"
+description = "Compressed memory notation with RAG retrieval for AI agents."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "KultMember6Banger" }]
+keywords = ["rag", "memory", "ai-agents", "chromadb", "embeddings", "compression"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+]
+dependencies = [
+    "chromadb>=1.0.0",
+    "sentence-transformers>=3.0.0",
+    "pyyaml>=6.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/KultMember6Banger/steno"
+Repository = "https://github.com/KultMember6Banger/steno"
+
+[project.scripts]
+steno = "steno:main"
+
+# Flat modules — package the individual .py files (no package directory).
+[tool.hatch.build.targets.wheel]
+only-include = [
+    "steno.py",
+    "steno_parser.py",
+    "steno_compress.py",
+    "memory_index.py",
+    "memory_retrieval.py",
+    "mcp_server.py",
+]
+
+[tool.hatch.build.targets.wheel.force-include]
+"steno.py" = "steno.py"
+"steno_parser.py" = "steno_parser.py"
+"steno_compress.py" = "steno_compress.py"
+"memory_index.py" = "memory_index.py"
+"memory_retrieval.py" = "memory_retrieval.py"
+"mcp_server.py" = "mcp_server.py"
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "steno.py",
+    "steno_parser.py",
+    "steno_compress.py",
+    "memory_index.py",
+    "memory_retrieval.py",
+    "mcp_server.py",
+    "README.md",
+    "LICENSE",
+    "requirements.txt",
+    "examples",
+    "tests",
+]

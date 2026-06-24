@@ -27,20 +27,27 @@ AI coding agents (Claude Code, Cursor, Copilot) build up memory files over time 
 git clone https://github.com/KultMember6Banger/steno.git
 cd steno
 
-# Install
+# Install (pip-installable — provides the `steno` console script)
 python3 -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt
+pip install .            # or: pip install -e .   (editable)
+# (or, without packaging: pip install -r requirements.txt and use `python steno.py ...`)
 
 # Index your memory files
-python steno.py index ./examples
+steno index ./examples
 
 # Search
-python steno.py query "database testing rules" 5
+steno query "database testing rules" 5
+
+# Compress prose into Steno notation
+steno compress notes.md
 
 # Check index stats
-python steno.py stats
+steno stats
 ```
+
+Requires Python 3.9+. (The code uses `from __future__ import annotations` so the
+PEP-604 `X | None` type hints work on 3.9.)
 
 ## Writing Steno Memory Files
 
@@ -101,9 +108,65 @@ Record types: `@V` (vulnerability), `@F` (finding), `@T` (target), `@C` (credent
 ```
 steno index [--rebuild] MEMORY_DIR    Index memory files (incremental by default)
 steno query "text" [N]                Semantic search, top N results
+steno compress FILE [--write]         Compress prose -> Steno notation
 steno stats                           Show index statistics
 steno parse FILE_OR_DIR               Parse and preview records
 ```
+
+`index`, `query` and `stats` all accept `--store=PATH` and `--collection=NAME`
+to target a specific ChromaDB store/collection (see [Integration](#integration)).
+
+### Compressing prose into Steno
+
+Steno can WRITE the compressed notation, not just read it. The compressor is
+rule-based (no LLM dependency) and lossy-but-auditable:
+
+```bash
+# Print compressed version to stdout (reports char-count reduction on stderr)
+steno compress notes.md
+
+# Rewrite the file in place (frontmatter preserved, format: steno set)
+steno compress notes.md --write
+
+# Choose level (default: steno)
+steno compress notes.md --level steno
+```
+
+What it does (the README's "Steno Format Rules"):
+
+- Drops articles (`a`/`an`/`the`) only where safe (never in headings).
+- Abbreviates a curated, extendable dictionary (`authentication`→`auth`,
+  `configuration`→`cfg`, `environment`→`env`, `repository`→`repo`,
+  `database`→`db`, `production`→`prod`, `verified`→`vfd`, …). The dictionary is
+  the legend — `steno_compress.expand_legend()` returns the expansion table.
+- Compresses ISO dates `YYYY-MM-DD` → `MM-DD`.
+- Collapses redundant whitespace.
+- Preserves verbatim: inline code (`` `...` ``), fenced code blocks, URLs,
+  emails, YAML frontmatter, and markdown structure.
+
+An LLM-assisted pass can be plugged in later via the documented `llm_hook`
+parameter of `steno_compress.compress()` — the default path uses no LLM.
+
+### MCP server
+
+Steno ships an stdio JSON-RPC MCP server (protocol `2024-11-05`) exposing the
+tools `steno_query`, `steno_index`, and `steno_compress`:
+
+```bash
+python mcp_server.py
+```
+
+Register it with an MCP-capable agent (e.g. Claude Code):
+
+```json
+{
+  "mcpServers": {
+    "steno": { "command": "python", "args": ["/path/to/steno/mcp_server.py"] }
+  }
+}
+```
+
+Tool results are returned as `{"content": [{"type": "text", "text": <json>}]}`.
 
 ### Query Filters
 
@@ -114,16 +177,28 @@ steno query "deployment process" --memory=project
 # Filter by record type (Steno-M)
 steno query "auth service" --type=@T
 
-# Set minimum similarity score
+# Set minimum similarity score (default: 0.30)
 steno query "testing" --min=0.6
+
+# Target a specific shared store / collection
+steno query "testing" --store=/path/to/store --collection=agent_memory
 ```
+
+The minimum similarity score defaults to **0.30** consistently across the
+library (`memory_retrieval.query`) and the CLI.
 
 ### Environment Variables
 
 | Variable | Default | Description |
 |---|---|---|
 | `STENO_STORE` | `./chroma_store` | ChromaDB storage path |
+| `MEMORY_STORE` | — | Fallback store path (used only if `STENO_STORE` is unset) |
+| `MEMORY_COLLECTION` | `agent_memory` | ChromaDB collection name |
 | `STENO_MODEL` | `all-MiniLM-L6-v2` | Sentence-transformers model |
+
+Store-dir precedence: explicit `--store` / arg > `STENO_STORE` > `MEMORY_STORE` >
+`./chroma_store`. Collection precedence: explicit `--collection` / arg >
+`MEMORY_COLLECTION` > `agent_memory`.
 
 ## How It Works
 
@@ -139,9 +214,9 @@ Top-K relevant records
 AI agent context window
 ```
 
-**Health-weighted scoring:** When used with [Vigil](https://github.com/KultMember6Banger/vigil), retrieval scores are multiplied by each memory's health score. Stale, contradicted, or orphaned memories are automatically deprioritized without manual curation.
+**Health-weighted scoring:** When used with [Vigil](https://github.com/KultMember6Banger/vigil), retrieval scores are multiplied by each memory's `health_score` (`score = similarity * health_score`, where `similarity = 1 - cosine_distance`). Stale, contradicted, or orphaned memories are automatically deprioritized without manual curation. Steno *reads* `health_score`; Vigil *writes* it.
 
-**Access tracking:** Every retrieval updates `access_count` and `last_accessed` in ChromaDB metadata. Vigil uses this to apply Ebbinghaus retention curves — frequently accessed memories resist staleness decay.
+**Access tracking:** Every retrieval updates `access_count` and `last_accessed` in ChromaDB metadata — and only for the records that actually pass the `min_score` filter and are returned (a high-ranked raw hit that gets filtered out is **not** bumped). Vigil uses this signal to apply Ebbinghaus retention curves — frequently accessed memories resist staleness decay.
 
 **Incremental indexing:** Steno tracks file modification times. Only changed files are re-embedded on re-index. Unchanged files are skipped in ~0.1s.
 
@@ -183,6 +258,34 @@ from memory_retrieval import query_formatted
 context = query_formatted("auth service architecture", top_k=5)
 # Returns formatted block ready to inject into agent prompt
 ```
+
+### With Vigil (shared ChromaDB)
+
+Steno and [Vigil](https://github.com/KultMember6Banger/vigil) operate on the
+**same ChromaDB store and collection** so Vigil can audit exactly what Steno
+indexes. The shared default collection is `agent_memory`.
+
+```bash
+# 1. Steno indexes memory into the shared store/collection
+steno index ./memories --store ./shared_store --collection agent_memory
+
+# 2. Vigil scores the same store (writes health_score onto each record)
+#    (run Vigil pointed at ./shared_store / agent_memory)
+
+# 3. Steno queries — retrieval is now health-weighted via health_score
+steno query "deployment rules" --store ./shared_store --collection agent_memory
+```
+
+Metadata contract every record carries:
+
+| Field | Written by | Notes |
+|---|---|---|
+| `source_file` | Steno | file stem |
+| `record_type` | Steno | `@V`/`@F`/…/`chunk` |
+| `memory_type` | Steno | user/feedback/project/reference |
+| `access_count` | Steno | int, default 0; bumped on retrieval |
+| `last_accessed` | Steno | ISO timestamp; set on retrieval |
+| `health_score` | **Vigil** | float, default 1.0; Steno reads & multiplies into score |
 
 ## Performance
 
