@@ -112,6 +112,75 @@ def parse_steno_m(body: str, file_stem: str, meta: dict) -> list[Record]:
     return records
 
 
+def to_steno_m(records: list[dict], scope: str | None = None) -> str:
+    """Emit Steno-M text from structured dicts (the inverse of parse_steno_m).
+
+    This is the WRITE side of Steno-M: it turns structured records back into the
+    positional `@V/@F/@T/@C/@A/@L` line format with `#scope` / `#schemas`
+    headers. `parse_steno_m(to_steno_m(x))` round-trips the field values.
+
+    Input shape — each record is a dict:
+        {
+          "type":   "@F",                 # required: one of @V/@F/@T/@C/@A/@L
+          "fields": ["BUG-123", "open",   # required: positional field values;
+                     "high", "auth"],     #   fields[0] is the record id
+        }
+    A convenience long form is also accepted:
+        {"type": "@T", "id": "auth-svc", "fields": ["active", "primary"]}
+    where `id` is prepended to `fields`.
+
+    Args:
+        records: list of structured record dicts (see shape above).
+        scope: optional scope written as a `#scope <scope>` header.
+
+    Returns:
+        Steno-M formatted text (newline-terminated), with a `#scope` header (if
+        given) and a `#schemas` header listing the distinct record types used.
+
+    Raises:
+        ValueError: if a record has no/invalid type or no fields.
+    """
+    lines: list[str] = []
+    if scope:
+        lines.append(f'#scope {scope}')
+
+    # Collect distinct record types in first-seen order for the #schemas header.
+    seen_types: list[str] = []
+    body_lines: list[str] = []
+
+    for rec in records:
+        rtype = rec.get('type')
+        if rtype not in STENO_M_PREFIXES:
+            raise ValueError(
+                f'invalid or missing record type: {rtype!r} '
+                f'(expected one of {sorted(STENO_M_PREFIXES)})'
+            )
+
+        fields = list(rec.get('fields') or [])
+        if 'id' in rec and rec['id'] is not None:
+            fields = [rec['id']] + fields
+        if not fields:
+            raise ValueError(f'record {rtype} has no fields (need at least an id)')
+
+        # Normalise to strings; a literal '|' in a field would break the format.
+        str_fields = [str(f) for f in fields]
+
+        if rtype not in seen_types:
+            seen_types.append(rtype)
+        body_lines.append(f'{rtype} ' + '|'.join(str_fields))
+
+    if seen_types:
+        lines.append('#schemas ' + ' '.join(seen_types))
+    if lines:
+        lines.append('')  # blank line between headers and records
+    lines.extend(body_lines)
+
+    text = '\n'.join(lines)
+    if not text.endswith('\n'):
+        text += '\n'
+    return text
+
+
 def parse_steno(body: str, file_stem: str, meta: dict, min_chunk: int = 40) -> list[Record]:
     """Parse Steno (auditable) formatted content into records.
 

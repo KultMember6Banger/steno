@@ -130,3 +130,110 @@ def test_llm_hook_failure_is_swallowed():
 
     out = sc.compress("the configuration here", llm_hook=bad_hook)
     assert 'cfg' in out  # rule-based output survives hook failure
+
+
+# --- expand (best-effort inverse) ----------------------------------------
+def test_expand_reverses_abbreviations():
+    out = sc.expand("auth cfg vfd in prod env")
+    assert 'authentication' in out
+    assert 'configuration' in out
+    assert 'verified' in out
+    assert 'production' in out
+    assert 'environment' in out
+
+
+def test_expand_preserves_leading_capital():
+    out = sc.expand("Cfg of the Db")
+    assert 'Configuration' in out
+    assert 'Database' in out
+
+
+def test_expand_roundtrip_over_abbreviation_set():
+    """compress then expand should recover the full word for every unambiguous
+    abbreviation in the legend (cfg is the documented ambiguous exception)."""
+    for full, abbr in sc.ABBREVIATIONS.items():
+        compressed = sc.compress(full)  # single word, no articles to drop
+        assert compressed.strip() == abbr, f"{full} did not compress to {abbr}"
+        expanded = sc.expand(compressed).strip()
+        # cfg maps from both configure/configuration; expansion picks one.
+        if abbr == 'cfg':
+            assert expanded == 'configuration'
+        else:
+            assert expanded == full, f"{abbr} expanded to {expanded}, wanted {full}"
+
+
+def test_expand_preserves_inline_code():
+    out = sc.expand("set `auth` to vfd")
+    assert '`auth`' in out  # not expanded inside backticks
+    assert 'verified' in out
+
+
+def test_expand_preserves_fenced_code():
+    text = "auth here\n```\nauth cfg verbatim\n```\nvfd there"
+    out = sc.expand(text)
+    assert 'auth cfg verbatim' in out  # untouched in fence
+    assert 'authentication here' in out
+
+
+def test_expand_does_not_restore_articles():
+    # documented limitation: dropped articles are NOT recovered.
+    compressed = sc.compress("the auth in the prod env")
+    expanded = sc.expand(compressed)
+    assert 'authentication' in expanded
+    assert 'the' not in expanded.split()  # still gone
+
+
+# --- verify / fidelity (real embeddings) ---------------------------------
+import pytest
+
+
+@pytest.fixture
+def real_embeddings():
+    """Ensure the REAL sentence_transformers is used.
+
+    Sibling test modules inject a fake `sentence_transformers` into sys.modules
+    to run without heavy deps; that fake leaks into this process. These fidelity
+    tests need the real MiniLM model, so we drop any fake and let compute_fidelity
+    re-import the genuine package. Skips if it isn't actually installed.
+    """
+    import importlib
+    saved = sys.modules.get('sentence_transformers')
+    if saved is not None and not hasattr(saved, '__file__'):
+        del sys.modules['sentence_transformers']  # remove the fake
+    try:
+        importlib.import_module('sentence_transformers')
+    except Exception:
+        pytest.skip('real sentence_transformers not available')
+    yield
+    if saved is not None:
+        sys.modules['sentence_transformers'] = saved  # restore the fake for others
+
+
+def test_compress_verify_returns_tuple(real_embeddings):
+    text = "the deployment pipeline runs nightly and the team reviews the results"
+    out, fidelity = sc.compress(text, verify=True)
+    assert isinstance(out, str)
+    assert isinstance(fidelity, float)
+    assert -1.0 <= fidelity <= 1.0
+
+
+def test_verify_article_dropping_preserves_fidelity(real_embeddings):
+    # Article-only compression (no obscure abbreviations) keeps the embedder's
+    # view of meaning largely intact.
+    text = "A quick brown fox jumps over the lazy dog while the cat watches from a fence"
+    out, fidelity = sc.compress(text, verify=True)
+    assert 'the' not in out.split() and 'a' not in out.split()
+    assert fidelity >= sc.FIDELITY_THRESHOLD
+
+
+def test_verify_flags_abbreviation_meaning_loss(real_embeddings):
+    # Heavy abbreviation obscures meaning to MiniLM (it doesn't know the legend),
+    # so fidelity drops below threshold — exactly the signal --verify surfaces.
+    text = "the authentication configuration was verified in the production environment"
+    out, fidelity = sc.compress(text, verify=True)
+    assert fidelity < sc.FIDELITY_THRESHOLD
+
+
+def test_compute_fidelity_identical_text_is_high(real_embeddings):
+    f = sc.compute_fidelity("hello world this is a test sentence", "hello world this is a test sentence")
+    assert f > 0.99

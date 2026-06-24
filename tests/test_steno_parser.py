@@ -83,6 +83,55 @@ def test_parse_steno_m_records_and_scope():
     assert recs[1].id == 'findings:@T:auth-service'
 
 
+# --- steno-m writer (to_steno_m) -----------------------------------------
+def test_to_steno_m_emits_headers_and_records():
+    out = sp.to_steno_m(
+        [
+            {'type': '@F', 'fields': ['BUG-123', 'open', 'high', 'auth-bypass']},
+            {'type': '@T', 'fields': ['auth-service', 'active', 'primary auth']},
+        ],
+        scope='myproject',
+    )
+    assert '#scope myproject' in out
+    assert '#schemas @F @T' in out
+    assert '@F BUG-123|open|high|auth-bypass' in out
+    assert '@T auth-service|active|primary auth' in out
+
+
+def test_to_steno_m_accepts_id_long_form():
+    out = sp.to_steno_m([{'type': '@T', 'id': 'svc', 'fields': ['active']}])
+    assert '@T svc|active' in out
+
+
+def test_to_steno_m_rejects_bad_type():
+    import pytest
+    with pytest.raises(ValueError):
+        sp.to_steno_m([{'type': '@X', 'fields': ['a']}])
+
+
+def test_to_steno_m_rejects_empty_fields():
+    import pytest
+    with pytest.raises(ValueError):
+        sp.to_steno_m([{'type': '@T', 'fields': []}])
+
+
+def test_parse_to_steno_m_roundtrip():
+    """parse_steno_m(to_steno_m(x)) recovers the record types, ids and scope."""
+    records = [
+        {'type': '@F', 'fields': ['BUG-1', 'open', 'high', 'desc']},
+        {'type': '@T', 'fields': ['svc-a', 'active', 'go-grpc', 'primary']},
+        {'type': '@V', 'fields': ['CVE-9', 'critical', 'rce']},
+    ]
+    text = sp.to_steno_m(records, scope='proj')
+    parsed = sp.parse_steno_m(text, 'mem', {'memory_type': 'project'})
+    assert len(parsed) == len(records)
+    assert [p.record_type for p in parsed] == ['@F', '@T', '@V']
+    assert parsed[0].id == 'mem:@F:BUG-1'
+    assert parsed[1].id == 'mem:@T:svc-a'
+    assert parsed[2].id == 'mem:@V:CVE-9'
+    assert all(p.metadata['scope'] == 'proj' for p in parsed)
+
+
 # --- steno parsing -------------------------------------------------------
 def test_parse_steno_splits_on_headers():
     body = (

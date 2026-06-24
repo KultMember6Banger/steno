@@ -13,8 +13,15 @@ jobs:
           python-version: "3.9"
       - name: Install light deps
         run: python -m pip install --upgrade pip pyyaml pytest
-      - name: Run parser + compressor tests
-        run: python -m pytest -q tests/test_steno_parser.py tests/test_steno_compress.py
+      - name: Run pure-python tests (parser, compressor, bm25, mmr)
+        # No heavy deps: the real-embedding fidelity tests self-skip when
+        # sentence-transformers is absent; mmr falls back to pure-python cosine.
+        run: >
+          python -m pytest -q
+          tests/test_steno_parser.py
+          tests/test_steno_compress.py
+          tests/test_bm25.py
+          tests/test_mmr.py
 
   # Full job: all tests including mocked chroma/embedding paths + heavy deps.
   full:

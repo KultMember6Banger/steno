@@ -12,7 +12,7 @@ AI coding agents (Claude Code, Cursor, Copilot) build up memory files over time 
 
 **Two-tier notation:**
 - **Steno** — human-auditable compressed format. Drop articles, abbreviate common terms, use key-value pairs. Readable by humans, efficient for AI.
-- **Steno-M** — AI-only format. Fixed schemas, positional fields, no labels. Maximum density for machine-to-machine communication.
+- **Steno-M** — AI-only format. Fixed schemas, positional fields, no labels. Maximum density for machine-to-machine communication. Steno both reads and **writes** Steno-M (see [`steno emit`](#writing-steno-m-from-structured-records-steno-emit)).
 
 **RAG retrieval:**
 - Parse memory files into structured records
@@ -109,12 +109,46 @@ Record types: `@V` (vulnerability), `@F` (finding), `@T` (target), `@C` (credent
 steno index [--rebuild] MEMORY_DIR    Index memory files (incremental by default)
 steno query "text" [N]                Semantic search, top N results
 steno compress FILE [--write]         Compress prose -> Steno notation
+steno expand FILE [--write]           Expand Steno -> readable prose (best-effort)
+steno emit JSON_FILE [--scope NAME]   Emit Steno-M from structured JSON records
 steno stats                           Show index statistics
 steno parse FILE_OR_DIR               Parse and preview records
 ```
 
-`index`, `query` and `stats` all accept `--store=PATH` and `--collection=NAME`
-to target a specific ChromaDB store/collection (see [Integration](#integration)).
+`index`, `query`, `stats` (and `compress --health-aware`) accept `--store=PATH`
+and `--collection=NAME` to target a specific ChromaDB store/collection (see
+[Integration](#integration)).
+
+### Advanced retrieval (`query`)
+
+```bash
+# Token-budget retrieval — return the best SET of results that fits a budget,
+# not a fixed top-K. Greedy knapsack by score-per-token (~4 chars/token est).
+steno query "auth architecture" --budget=2000
+
+# Hybrid search — fuse semantic ranking with pure-Python BM25 keyword ranking
+# via Reciprocal Rank Fusion. Fixes recall on EXACT tokens that vector search
+# misses: names, ports, IDs, error codes (e.g. "port 50052", "BUG-123").
+steno query "port 50052" --hybrid
+
+# MMR re-ranking — Maximal Marginal Relevance diversifies the top-K so you don't
+# get five near-duplicate records. --mmr-lambda tunes relevance vs diversity
+# (1.0 = pure relevance, 0.0 = pure diversity; default 0.5).
+steno query "deployment" --mmr --mmr-lambda=0.5
+
+# Combine them:
+steno query "auth service port" --hybrid --mmr --budget=2000
+```
+
+| Flag | Effect |
+|---|---|
+| `--budget=N` | Return best result SET whose estimated tokens ≤ N (knapsack) |
+| `--hybrid` | Semantic + BM25 keyword fusion (Reciprocal Rank Fusion) |
+| `--mmr` | Diversify top-K via Maximal Marginal Relevance |
+| `--mmr-lambda=F` | MMR relevance/diversity trade-off in [0,1] (default 0.5) |
+
+These are additive and back-compatible: with none set, `query` behaves exactly
+as before (semantic top-K).
 
 ### Compressing prose into Steno
 
@@ -144,8 +178,118 @@ What it does (the README's "Steno Format Rules"):
 - Preserves verbatim: inline code (`` `...` ``), fenced code blocks, URLs,
   emails, YAML frontmatter, and markdown structure.
 
-An LLM-assisted pass can be plugged in later via the documented `llm_hook`
-parameter of `steno_compress.compress()` — the default path uses no LLM.
+#### LLM-assisted compression (optional hook)
+
+The default path is 100% rule-based with no LLM dependency. To plug in a
+*semantic* compression pass (prose → steno via summarisation), pass a callable
+to `steno_compress.compress(..., llm_hook=...)`:
+
+```python
+from steno_compress import compress
+
+def my_llm(line: str) -> str:
+    # `line` is one already-rule-compressed prose line (never a code/URL span).
+    return call_your_model(f"Compress to steno, keep meaning: {line}")
+
+out = compress(prose, llm_hook=my_llm)   # rule-based first, then your model
+```
+
+Hook contract: `llm_hook(text: str) -> str`. Input is a single rule-compressed
+prose line; preserved spans (inline code, URLs, emails) are stripped out before
+the hook runs. Any exception is swallowed and the rule-based line is kept, so the
+hook is always safe to fail.
+
+#### Expanding Steno back to prose (`steno expand`)
+
+`expand` is the **best-effort inverse** of `compress`: it runs the abbreviation
+legend in reverse to recover readability. It is a readability aid, **not a
+lossless decompressor**:
+
+- Expands abbreviations (`auth`→`authentication`, `cfg`→`configuration`,
+  `db`→`database`, `k8s`→`kubernetes`, …).
+- Dropped articles (`a`/`an`/`the`) are **not** restored (that needs a language
+  model).
+- Compressed dates stay `MM-DD` (the year is gone — irreversible).
+- A few abbreviations are ambiguous (`cfg` maps from both `configuration` and
+  `configure`; expansion picks `configuration`).
+
+```bash
+steno expand notes.md            # print expanded prose to stdout
+steno expand notes.md --write    # rewrite in place (drops format: steno)
+```
+
+#### Fidelity check (`steno compress --verify`)
+
+`--verify` embeds the original and the compressed text with the real MiniLM
+model, prints the cosine **fidelity**, and **warns** if it drops below the
+threshold (default `0.92`):
+
+```bash
+steno compress notes.md --verify
+# ...
+# [steno compress] semantic fidelity (cosine): 0.95
+```
+
+Use it to catch meaning loss. Note: article-only compression scores high
+(~0.95), but **aggressive abbreviation can score low** because MiniLM doesn't
+know the legend — it sees `vfd` as gibberish, not `verified`. That low score is
+the intended signal: it flags where compression has drifted from what the
+embedder (and therefore retrieval) understands. `--verify` is most useful on
+LLM-assisted or lighter passes. Available in the library as
+`compress(text, verify=True)` (returns `(text, fidelity)`).
+
+#### Health-aware compression (`--health-aware`)
+
+Reads each memory's `health_score` from the shared store (written by
+[Vigil](#with-vigil-shared-chromadb)) and compresses by health:
+
+- **LOW health (`< 0.7`) or no health found** → aggressive (`steno`: drop
+  articles + abbreviate). Decayed/contradicted memories shrink hard.
+- **HIGH health (`≥ 0.7`)** → conservative (abbreviate only, keep articles), so
+  trusted memories stay close to verbatim.
+
+The policy keys off the **minimum** health across a file's records (any decayed
+record pulls the file toward aggressive compression).
+
+```bash
+steno compress old_note.md --health-aware --store ./shared_store
+# [steno compress] ... (health-aware: health=0.30 LOW -> aggressive)
+```
+
+#### Writing Steno-M from structured records (`steno emit`)
+
+Steno-M was previously read-only. `to_steno_m()` (and the `steno emit` /
+`steno compress --level steno-m` CLI paths) now **write** the positional
+`@V/@F/@T/@C/@A/@L` format from structured dicts — the inverse of
+`parse_steno_m`. JSON input shape:
+
+```json
+{
+  "scope": "myproject",
+  "records": [
+    {"type": "@F", "fields": ["BUG-123", "open", "high", "auth-bypass"]},
+    {"type": "@T", "fields": ["auth-service", "active", "primary auth, port 50052"]}
+  ]
+}
+```
+
+`fields[0]` is the record id. A long form `{"type": "@T", "id": "svc",
+"fields": [...]}` is also accepted. `parse_steno_m(to_steno_m(x))` round-trips.
+
+```bash
+steno emit records.json --scope myproject
+steno compress records.json --level steno-m   # same emit path
+```
+
+Output:
+
+```
+#scope myproject
+#schemas @F @T
+
+@F BUG-123|open|high|auth-bypass
+@T auth-service|active|primary auth, port 50052
+```
 
 ### MCP server
 
