@@ -145,3 +145,15 @@ def test_parse_directory_skips_special_files(tmp_path):
     recs = sp.parse_directory(tmp_path)
     assert recs
     assert all(r.source_file == 'real' for r in recs)
+
+
+# --- nested metadata.type (Claude Code memory format) --------------------
+def test_parse_file_resolves_nested_metadata_type(tmp_path):
+    f = tmp_path / "nested.md"
+    f.write_text(
+        "---\nname: Nested\ndescription: d\nmetadata:\n  type: feedback\n---\n"
+        "rule: integration tests must connect to a real database, never mock it\n"
+    )
+    recs = sp.parse_file(f)
+    assert recs, "expected at least one record"
+    assert recs[0].metadata.get("memory_type") == "feedback", "nested metadata.type should resolve"
