@@ -16,6 +16,7 @@ from pathlib import Path
 import chromadb
 from sentence_transformers import SentenceTransformer
 
+import memcore
 from steno_parser import Record, parse_directory, parse_file
 
 # Defaults — override via env vars or function args.
@@ -26,14 +27,16 @@ from steno_parser import Record, parse_directory, parse_file
 # The shared 'agent_memory' collection name lets the sibling Vigil project audit
 # exactly what Steno indexes by pointing at the same ChromaDB store + collection.
 def _default_store_dir() -> Path:
-    env = os.environ.get('STENO_STORE') or os.environ.get('MEMORY_STORE')
-    if env:
-        return Path(env)
-    return Path(__file__).parent / 'chroma_store'
+    # Store-dir precedence honored by the shared core: STENO_STORE > MEMORY_STORE
+    # > ./chroma_store next to this module.
+    return memcore.resolve_store(
+        None, 'STENO_STORE', 'MEMORY_STORE',
+        default=Path(__file__).parent / 'chroma_store',
+    )
 
 
 DEFAULT_STORE_DIR = _default_store_dir()
-COLLECTION_NAME = os.environ.get('MEMORY_COLLECTION', 'agent_memory')
+COLLECTION_NAME = memcore.resolve_collection()
 EMBED_MODEL = os.environ.get('STENO_MODEL', 'all-MiniLM-L6-v2')
 BATCH_SIZE = 64
 MTIME_FILE = 'file_mtimes.json'
@@ -56,8 +59,8 @@ def get_collection(client: chromadb.ClientAPI, name: str = None) -> chromadb.Col
 
 
 def load_model(model_name: str = EMBED_MODEL) -> SentenceTransformer:
-    """Load the embedding model."""
-    return SentenceTransformer(model_name)
+    """Load the embedding model (cached via the shared core)."""
+    return memcore.load_embedder(model_name)
 
 
 def _mtime_path(store_dir: Path) -> Path:

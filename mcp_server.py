@@ -10,6 +10,7 @@ Tools exposed:
   - steno_query    : semantic search over the memory index
   - steno_index    : index / re-index a memory directory
   - steno_compress : compress prose text -> Steno notation
+  - memory_curate  : self-curating loop (compress -> gate -> index -> score)
 
 Transport: newline-delimited JSON-RPC 2.0 messages on stdin/stdout (one JSON
 object per line). Logs/diagnostics go to stderr only.
@@ -32,7 +33,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 PROTOCOL_VERSION = '2024-11-05'
-SERVER_INFO = {'name': 'steno', 'version': '0.2.0'}
+SERVER_INFO = {'name': 'steno', 'version': '0.4.0'}
 
 TOOLS = [
     {
@@ -79,6 +80,26 @@ TOOLS = [
                 'level': {'type': 'string', 'description': "Compression level (default 'steno')"},
             },
             'required': ['text'],
+        },
+    },
+    {
+        'name': 'memory_curate',
+        'description': (
+            'Self-curating loop over a memory directory: compress -> gate '
+            '(Vigil contradiction check) -> index -> health-score (Vigil). '
+            'Vigil steps are soft and activate only when Vigil is importable.'
+        ),
+        'inputSchema': {
+            'type': 'object',
+            'properties': {
+                'memory_dir': {'type': 'string', 'description': 'Directory of .md memory files'},
+                'compress': {'type': 'boolean', 'description': 'Compress prose memories in place first'},
+                'gate': {'type': 'boolean', 'description': 'Run Vigil pre-write contradiction gate'},
+                'yes': {'type': 'boolean', 'description': 'Index gate-flagged files anyway'},
+                'store': {'type': 'string', 'description': 'ChromaDB store path'},
+                'collection': {'type': 'string', 'description': 'Collection name (default agent_memory)'},
+            },
+            'required': ['memory_dir'],
         },
     },
 ]
@@ -146,10 +167,28 @@ def _tool_steno_compress(args: dict) -> str:
     )
 
 
+def _tool_memory_curate(args: dict) -> str:
+    from steno_curate import curate
+    from memory_index import DEFAULT_STORE_DIR
+
+    store = args.get('store')
+    summary = curate(
+        Path(args['memory_dir']),
+        compress=bool(args.get('compress', False)),
+        gate=bool(args.get('gate', False)),
+        store_dir=Path(store) if store else DEFAULT_STORE_DIR,
+        collection_name=args.get('collection'),
+        yes=bool(args.get('yes', False)),
+        verbose=False,
+    )
+    return json.dumps(summary, indent=2)
+
+
 TOOL_IMPLS = {
     'steno_query': _tool_steno_query,
     'steno_index': _tool_steno_index,
     'steno_compress': _tool_steno_compress,
+    'memory_curate': _tool_memory_curate,
 }
 
 

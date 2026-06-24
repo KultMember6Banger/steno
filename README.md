@@ -111,6 +111,7 @@ steno query "text" [N]                Semantic search, top N results
 steno compress FILE [--write]         Compress prose -> Steno notation
 steno expand FILE [--write]           Expand Steno -> readable prose (best-effort)
 steno emit JSON_FILE [--scope NAME]   Emit Steno-M from structured JSON records
+steno curate MEMORY_DIR [--compress] [--gate] [--yes]   Self-curating loop
 steno stats                           Show index statistics
 steno parse FILE_OR_DIR               Parse and preview records
 ```
@@ -291,21 +292,36 @@ Output:
 @T auth-service|active|primary auth, port 50052
 ```
 
-### MCP server
+### MCP servers
 
-Steno ships an stdio JSON-RPC MCP server (protocol `2024-11-05`) exposing the
-tools `steno_query`, `steno_index`, and `steno_compress`:
+Steno ships **two** stdio JSON-RPC MCP servers (protocol `2024-11-05`).
+
+**1. `mcp_server.py` — Steno-only.** Exposes `steno_query`, `steno_index`,
+`steno_compress`, and `memory_curate`:
 
 ```bash
 python mcp_server.py
 ```
 
-Register it with an MCP-capable agent (e.g. Claude Code):
+**2. `memory_mcp.py` — the unified memory server (recommended).** One entry
+point for the *whole* memory system. It always exposes the Steno tools
+`memory_query` (with `hybrid` / `mmr` / `budget` options), `memory_index`,
+`memory_compress`, `memory_expand`, and `memory_curate`. When **Vigil is
+importable** (pip-installed, or a sibling `../vigil/src` checkout) it *also*
+exposes the auditor tools `memory_audit`, `memory_check`, `memory_fix`, and
+`memory_health`. `tools/list` reflects what is actually available — Vigil tools
+are not advertised when Vigil is absent.
+
+```bash
+python memory_mcp.py      # or the `memory-mcp` console script after install
+```
+
+Register either with an MCP-capable agent (e.g. Claude Code):
 
 ```json
 {
   "mcpServers": {
-    "steno": { "command": "python", "args": ["/path/to/steno/mcp_server.py"] }
+    "memory": { "command": "python", "args": ["/path/to/steno/memory_mcp.py"] }
   }
 }
 ```
@@ -430,6 +446,52 @@ Metadata contract every record carries:
 | `access_count` | Steno | int, default 0; bumped on retrieval |
 | `last_accessed` | Steno | ISO timestamp; set on retrieval |
 | `health_score` | **Vigil** | float, default 1.0; Steno reads & multiplies into score |
+
+### Self-curating memory loop (`steno curate`)
+
+`steno curate` ties the runtime (Steno) and the auditor (Vigil) into a single
+self-maintaining pipeline so memory stays compressed, contradiction-free, and
+health-weighted with one command:
+
+```
+compress  →  gate  →  index  →  score  →  health-weighted retrieve
+(Steno)     (Vigil)   (Steno)   (Vigil)    (Steno)
+```
+
+```bash
+# Full loop (Vigil installed): compress prose, gate contradictions, index, score.
+steno curate ./memories --compress --gate --store ./shared_store
+
+# Bare Steno (Vigil absent): compress + index only — Vigil steps are skipped.
+steno curate ./memories --compress
+```
+
+Pipeline, per run:
+
+1. **compress** (`--compress`) — compress prose memories in place; already-Steno
+   files are skipped.
+2. **gate** (`--gate`) — soft-imports Vigil and runs the pre-write contradiction
+   check for each new/changed file against the existing index. A **CRITICAL**
+   contradiction warns and **skips indexing that file** (use `--yes` to index it
+   anyway). If Vigil isn't installed, a notice is printed and gating is skipped.
+3. **index** — build/update the shared ChromaDB store/collection.
+4. **score** — soft-imports Vigil's `full_scan` + `compute_health_scores` +
+   `update_health_scores` and writes `health_score` onto each record, so the very
+   next `steno query` is health-weighted. Skipped if Vigil is absent.
+
+The summary prints `compressed`, `gated`, `indexed`, `scored`, and
+`vigil_available`. The loop **works whether or not Vigil is importable.**
+
+**Vigil discovery:** `curate` first tries a normal `import vigil` (pip-installed
+is the expected path for full functionality), then falls back to a sibling
+`../vigil/src` checkout next to the Steno repo. The same loop is available as the
+`memory_curate` MCP tool on both MCP servers.
+
+> Shared plumbing (frontmatter parsing, the cached embedder, the
+> cosine↔distance conversion, ChromaDB client/collection setup, and
+> store/collection resolution) lives in **`memcore.py`** — a canonical core
+> vendored identically into both Steno and Vigil. A published `memcore` package
+> is its eventual home.
 
 ## Performance
 

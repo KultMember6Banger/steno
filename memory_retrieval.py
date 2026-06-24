@@ -20,6 +20,7 @@ import math
 import chromadb
 from sentence_transformers import SentenceTransformer
 
+import memcore
 from memory_index import DEFAULT_STORE_DIR, COLLECTION_NAME, EMBED_MODEL
 from bm25 import BM25, reciprocal_rank_fusion
 from mmr import mmr_rank
@@ -170,7 +171,7 @@ def query(
     semantic_scores: list[float] = []
     for i in range(n):
         distance = results['distances'][0][i]
-        raw_score = 1 - distance
+        raw_score = memcore.sim_from_distance(distance)
         meta = results['metadatas'][0][i]
         health = float(meta.get('health_score', 1.0))
         semantic_scores.append(raw_score * health)
