@@ -9,6 +9,8 @@ Handles three formats:
 Output: list of Record dicts ready for embedding and indexing.
 """
 
+from __future__ import annotations
+
 import re
 import yaml
 from pathlib import Path

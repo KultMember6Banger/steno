@@ -1,0 +1,32 @@
+name: tests
+
+on: [push, pull_request]
+
+jobs:
+  # Light job: parser + compressor tests only — no heavy deps (fast).
+  light:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.9"
+      - name: Install light deps
+        run: python -m pip install --upgrade pip pyyaml pytest
+      - name: Run parser + compressor tests
+        run: python -m pytest -q tests/test_steno_parser.py tests/test_steno_compress.py
+
+  # Full job: all tests including mocked chroma/embedding paths + heavy deps.
+  full:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install full deps
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install chromadb sentence-transformers pyyaml pytest
+      - name: Run all tests
+        run: python -m pytest -q

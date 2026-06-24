@@ -5,6 +5,8 @@ Uses all-MiniLM-L6-v2 (384-dim, CPU, ~80MB) for embeddings.
 ChromaDB persists to disk. File mtimes tracked for incremental updates.
 """
 
+from __future__ import annotations
+
 import json
 import os
 import sys
@@ -16,9 +18,22 @@ from sentence_transformers import SentenceTransformer
 
 from steno_parser import Record, parse_directory, parse_file
 
-# Defaults — override via env vars or function args
-DEFAULT_STORE_DIR = Path(os.environ.get('STENO_STORE', Path(__file__).parent / 'chroma_store'))
-COLLECTION_NAME = 'steno_memory'
+# Defaults — override via env vars or function args.
+#
+# Store-dir precedence: explicit arg > STENO_STORE > MEMORY_STORE > ./chroma_store
+# Collection precedence: explicit arg > MEMORY_COLLECTION > 'agent_memory'
+#
+# The shared 'agent_memory' collection name lets the sibling Vigil project audit
+# exactly what Steno indexes by pointing at the same ChromaDB store + collection.
+def _default_store_dir() -> Path:
+    env = os.environ.get('STENO_STORE') or os.environ.get('MEMORY_STORE')
+    if env:
+        return Path(env)
+    return Path(__file__).parent / 'chroma_store'
+
+
+DEFAULT_STORE_DIR = _default_store_dir()
+COLLECTION_NAME = os.environ.get('MEMORY_COLLECTION', 'agent_memory')
 EMBED_MODEL = os.environ.get('STENO_MODEL', 'all-MiniLM-L6-v2')
 BATCH_SIZE = 64
 MTIME_FILE = 'file_mtimes.json'
@@ -30,8 +45,10 @@ def get_client(store_dir: Path = DEFAULT_STORE_DIR) -> chromadb.ClientAPI:
     return chromadb.PersistentClient(path=str(store_dir))
 
 
-def get_collection(client: chromadb.ClientAPI, name: str = COLLECTION_NAME) -> chromadb.Collection:
+def get_collection(client: chromadb.ClientAPI, name: str = None) -> chromadb.Collection:
     """Get or create the memory collection."""
+    if name is None:
+        name = COLLECTION_NAME
     return client.get_or_create_collection(
         name=name,
         metadata={'hnsw:space': 'cosine'}
@@ -89,6 +106,7 @@ def build_index(
     store_dir: Path = DEFAULT_STORE_DIR,
     model_name: str = EMBED_MODEL,
     rebuild: bool = False,
+    collection_name: str = None,
 ) -> dict:
     """Parse memory files, embed, and store in ChromaDB.
 
@@ -99,23 +117,26 @@ def build_index(
         store_dir: path to ChromaDB storage
         model_name: sentence-transformers model name
         rebuild: if True, drop and recreate collection
+        collection_name: ChromaDB collection (default: COLLECTION_NAME / 'agent_memory')
 
     Returns:
         dict with stats
     """
     t0 = time.time()
+    if collection_name is None:
+        collection_name = COLLECTION_NAME
 
     client = get_client(store_dir)
     if rebuild:
         try:
-            client.delete_collection(COLLECTION_NAME)
+            client.delete_collection(collection_name)
         except Exception:
             pass
         mtime_p = _mtime_path(store_dir)
         if mtime_p.exists():
             mtime_p.unlink()
 
-    collection = get_collection(client)
+    collection = get_collection(client, collection_name)
     old_mtimes = {} if rebuild else _load_mtimes(store_dir)
     new_mtimes = {}
 
@@ -203,11 +224,20 @@ if __name__ == '__main__':
     memory_dir = Path(args[0]) if args else Path('.')
     rebuild = '--rebuild' in flags
 
+    store_dir = DEFAULT_STORE_DIR
+    collection_name = None
+    for flag in flags:
+        if flag.startswith('--store='):
+            store_dir = Path(flag[len('--store='):])
+        elif flag.startswith('--collection='):
+            collection_name = flag[len('--collection='):]
+
     print(f'Indexing {memory_dir}...')
     if rebuild:
         print('(rebuilding from scratch)')
 
-    stats = build_index(memory_dir, rebuild=rebuild)
+    stats = build_index(memory_dir, store_dir=store_dir, rebuild=rebuild,
+                        collection_name=collection_name)
     print(f'Done in {stats["time_sec"]}s')
     print(f'  Indexed:   {stats["records_indexed"]} records')
     print(f'  Updated:   {stats["records_updated"]} files re-indexed')
